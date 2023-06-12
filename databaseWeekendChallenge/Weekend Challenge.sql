@@ -82,22 +82,89 @@ JOIN NumMembersBorrowedBooks ON Members.MemberID = NumMembersBorrowedBooks.Membe
 
 
 --Trigger that automatically updates the "Status" column in the "Books" table whenever a book is loaned or returned.
-CREATE TRIGGER BookStatus ON Books
-AFTER UPDATE
+CREATE TRIGGER BookStatus ON Loans
+AFTER INSERT, UPDATE, DELETE
 AS
 BEGIN
-	IF UPDATE(Status)
-	BEGIN 
-		UPDATE b 
-		SET b.Status = CASE
-			WHEN i.Loaned IS NOT NULL THEN 'Loaned'
-			WHEN i.Loaned IS NULL THEN 'Available'
-			ELSE b.Status
-		END
-		FROM Books b
-		INNER JOIN inserted i ON b.BookID = i.BookID
-	END
+    UPDATE Books
+    SET Status = CASE
+        WHEN BookID IN (SELECT BookID FROM inserted) THEN 'Loaned'
+        WHEN BookID IN (SELECT BookID FROM deleted) AND BookID NOT IN (SELECT BookID FROM Loans) THEN 'Available'
+        ELSE Status
+    END
+    WHERE BookID IN (SELECT BookID FROM inserted) OR BookID IN (SELECT BookID FROM deleted)
 END
 
 
+INSERT INTO Loans (LoanID, BookID, MemberID, LoanDate, ReturnDate)
+VALUES (17, 1, 2, '2023-06-12', '2023-06-26');
 
+
+UPDATE Loans
+SET ReturnDate = '2023-06-20'
+WHERE LoanID = 1;
+
+SELECT * FROM Loans
+SELECT * FROM Books
+
+DELETE FROM Loans
+WHERE LoanID = 2;
+
+SELECT * FROM Loans
+SELECT * FROM Books
+
+
+--user-defined function that calculates the overdue days for a given loan
+CREATE FUNCTION CalculateOverdueDays (@LoanID INT)
+RETURNS INT
+AS
+BEGIN
+    DECLARE @OverdueDays INT;
+    
+    SELECT @OverdueDays = DATEDIFF(DAY, LoanDate, GETDATE())
+    FROM Loans
+    WHERE LoanID = @LoanID;
+    IF @OverdueDays < 0
+        SET @OverdueDays = 0;
+    
+    RETURN @OverdueDays;
+END;
+
+DECLARE @LoanID INT = 1; 
+
+SELECT dbo.CalculateOverdueDays(@LoanID) AS OverdueDays;
+
+
+--Trigger that prevents a member from borrowing more than three books at a time.
+
+CREATE TRIGGER PreventExcessiveBorrowing
+ON Loans
+INSTEAD OF INSERT
+AS
+BEGIN
+    DECLARE @MemberID INT;
+    SELECT @MemberID = MemberID FROM inserted;
+    
+    DECLARE @NumBooks INT;
+    SELECT @NumBooks = COUNT(*) FROM Loans WHERE MemberID = @MemberID;
+    
+    IF @NumBooks >= 3
+    BEGIN
+        RAISERROR('The member is already borrowing three books and cannot borrow more.', 16, 1);
+        ROLLBACK TRANSACTION;
+        RETURN;
+    END;
+    
+    INSERT INTO Loans (LoanID, BookID, MemberID, LoanDate, ReturnDate)
+    SELECT LoanID, BookID, MemberID, LoanDate, ReturnDate FROM inserted;
+    
+    UPDATE Books
+    SET Status = 'Loaned'
+    WHERE BookID IN (SELECT BookID FROM inserted);
+    
+    SELECT * FROM Loans WHERE MemberID = @MemberID;
+    SELECT * FROM Books WHERE BookID IN (SELECT BookID FROM inserted);
+END;
+
+INSERT INTO Loans (LoanID, BookID, MemberID, LoanDate, ReturnDate)
+VALUES (18, 3, 1, '2023-06-12', '2023-06-26');
